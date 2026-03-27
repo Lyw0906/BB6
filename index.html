@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>3D 維度重構：極限挑戰</title>
+    <style>
+        :root {
+            --bg: #050510;
+            --neon-blue: #00d4ff;
+            --neon-purple: #b537f2;
+            --obstacle: #444;
+            --cell-size: 35px; 
+            --cube-size: calc(var(--cell-size) * 6 + 20px);
+        }
+
+        body {
+            background-color: var(--bg);
+            color: white;
+            font-family: 'Segoe UI', "Microsoft JhengHei", sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            perspective: 1200px;
+            overflow: hidden;
+            height: 100vh;
+        }
+
+        .header { margin-top: 20px; text-align: center; z-index: 100; }
+        .score-box { font-size: 24px; color: var(--neon-blue); text-shadow: 0 0 10px var(--neon-blue); }
+
+        /* Game Over 遮罩 */
+        #game-over {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85);
+            z-index: 1000;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            backdrop-filter: blur(10px);
+        }
+        #game-over h2 { font-size: 48px; color: #ff4d4d; margin-bottom: 10px; }
+
+        .scene {
+            width: var(--cube-size);
+            height: var(--cube-size);
+            margin: 60px auto;
+            position: relative;
+            cursor: grab;
+        }
+        .scene:active { cursor: grabbing; }
+
+        .cube {
+            width: 100%; height: 100%;
+            position: relative;
+            transform-style: preserve-3d;
+            transform: rotateX(-20deg) rotateY(30deg);
+            transition: transform 0.1s linear;
+        }
+
+        .face {
+            position: absolute;
+            width: var(--cube-size); height: var(--cube-size);
+            background: rgba(20, 20, 35, 0.95);
+            border: 2px solid #333;
+            display: grid;
+            grid-template-columns: repeat(6, var(--cell-size));
+            gap: 2px; padding: 5px; box-sizing: border-box;
+        }
+
+        .face.front  { transform: rotateY(0deg) translateZ(calc(var(--cube-size)/2)); }
+        .face.back   { transform: rotateY(180deg) translateZ(calc(var(--cube-size)/2)); }
+        .face.right  { transform: rotateY(90deg) translateZ(calc(var(--cube-size)/2)); }
+        .face.left   { transform: rotateY(-90deg) translateZ(calc(var(--cube-size)/2)); }
+        .face.top    { transform: rotateX(90deg) translateZ(calc(var(--cube-size)/2)); }
+        .face.bottom { transform: rotateX(-90deg) translateZ(calc(var(--cube-size)/2)); }
+
+        .cell { width: var(--cell-size); height: var(--cell-size); background: rgba(255, 255, 255, 0.03); border-radius: 2px; }
+        .cell.filled { background: linear-gradient(45deg, var(--neon-blue), var(--neon-purple)); box-shadow: 0 0 10px var(--neon-blue); border: none; }
+        .cell.obstacle { background: var(--obstacle); border: 1px solid #666; }
+        .cell.preview { background: rgba(0, 212, 255, 0.4) !important; }
+
+        #piece-shelf {
+            position: fixed; bottom: 30px;
+            display: flex; gap: 30px; padding: 20px 40px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 20px; backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .piece-grid { display: grid; gap: 3px; cursor: grab; }
+        .p-cell { width: 22px; height: 22px; border-radius: 2px; }
+        .p-cell.active { background: var(--neon-purple); box-shadow: 0 0 8px var(--neon-purple); }
+
+        .btn-ui { background: transparent; color: white; border: 1px solid #555; padding: 10px 25px; cursor: pointer; font-size: 18px; }
+        .btn-ui:hover { background: #fff; color: #000; }
+    </style>
+</head>
+<body>
+
+    <div id="game-over">
+        <h2>維度崩塌</h2>
+        <p id="final-score" style="font-size: 20px; margin-bottom: 20px;">最終同步能量: 0</p>
+        <button class="btn-ui" onclick="resetGame()">重啟序列</button>
+    </div>
+
+    <div class="header">
+        <h1>維度重構 3D</h1>
+        <div class="score-box">同步能量: <span id="score">0</span></div>
+    </div>
+
+    <div class="scene" id="scene">
+        <div class="cube" id="cube">
+            <div class="face front" id="face-front"></div>
+            <div class="face back" id="face-back"></div>
+            <div class="face right" id="face-right"></div>
+            <div class="face left" id="face-left"></div>
+            <div class="face top" id="face-top"></div>
+            <div class="face bottom" id="face-bottom"></div>
+        </div>
+    </div>
+
+    <div id="piece-shelf"></div>
+
+    <script>
+        const SIZE = 6;
+        const faces = ['front', 'back', 'right', 'left', 'top', 'bottom'];
+        let boards = {};
+        let score = 0;
+        let draggedPiece = null;
+        let draggedIndex = null;
+        let currentPieces = [];
+
+        const SHAPES = [
+            [[1, 1, 1]], [[1, 1, 1, 1]], [[1, 1], [1, 1]], 
+            [[1, 1, 1], [0, 1, 0]], [[1, 1], [1, 0], [1, 0]], 
+            [[1, 1, 0], [0, 1, 1]], [[1, 1, 1], [1, 0, 0], [1, 0, 0]],
+            [[1]], [[1, 1]] 
+        ];
+
+        let rotX = -20, rotY = 30, isDragging = false, startX, startY;
+        const cube = document.getElementById('cube');
+
+        document.addEventListener('mousedown', e => {
+            if (e.target.closest('.piece-grid') || e.target.closest('.btn-ui')) return;
+            isDragging = true; startX = e.pageX; startY = e.pageY;
+        });
+        document.addEventListener('mousemove', e => {
+            if (!isDragging) return;
+            rotY += (e.pageX - startX) * 0.5;
+            rotX -= (e.pageY - startY) * 0.5;
+            cube.style.transform = `rotateX(${rotX}deg) rotateY(${rotY}deg)`;
+            startX = e.pageX; startY = e.pageY;
+        });
+        document.addEventListener('mouseup', () => isDragging = false);
+
+        function init() {
+            document.getElementById('game-over').style.display = 'none';
+            score = 0;
+            document.getElementById('score').innerText = '0';
+            faces.forEach(f => {
+                boards[f] = Array(SIZE).fill().map(() => Array(SIZE).fill(0));
+                const obsCount = Math.floor(Math.random() * 3) + 2;
+                for(let i=0; i<obsCount; i++){
+                    let r = Math.floor(Math.random()*SIZE), c = Math.floor(Math.random()*SIZE);
+                    boards[f][r][c] = 2; 
+                }
+                renderFace(f);
+            });
+            generatePieces();
+        }
+
+        function renderFace(faceId) {
+            const el = document.getElementById('face-' + faceId);
+            el.innerHTML = '';
+            for (let r = 0; r < SIZE; r++) {
+                for (let c = 0; c < SIZE; c++) {
+                    const cell = document.createElement('div');
+                    const val = boards[faceId][r][c];
+                    cell.className = 'cell' + (val === 1 ? ' filled' : (val === 2 ? ' obstacle' : ''));
+                    cell.dataset.r = r; cell.dataset.c = c;
+                    cell.ondragenter = () => showPreview(faceId, r, c);
+                    cell.ondragover = e => e.preventDefault();
+                    cell.ondrop = () => handleDrop(faceId, r, c);
+                    el.appendChild(cell);
+                }
+            }
+        }
+
+        function generatePieces() {
+            const shelf = document.getElementById('piece-shelf');
+            shelf.innerHTML = '';
+            currentPieces = [0, 1, 2].map(() => {
+                const roll = Math.random();
+                const idx = roll < 0.05 ? (Math.floor(Math.random() * 2) + 7) : Math.floor(Math.random() * 7);
+                return SHAPES[idx];
+            });
+            currentPieces.forEach((shape, i) => {
+                const grid = document.createElement('div');
+                grid.className = 'piece-grid';
+                grid.draggable = true;
+                grid.style.gridTemplateColumns = `repeat(${shape[0].length}, 22px)`;
+                shape.forEach(row => row.forEach(val => {
+                    const c = document.createElement('div');
+                    c.className = val ? 'p-cell active' : 'p-cell';
+                    grid.appendChild(c);
+                }));
+                grid.ondragstart = () => { draggedPiece = shape; draggedIndex = i; };
+                grid.ondragend = () => clearPreview();
+                shelf.appendChild(grid);
+            });
+            checkGameOver();
+        }
+
+        function showPreview(fId, r, c) {
+            clearPreview();
+            if (!draggedPiece) return;
+            if (canPlace(fId, r, c, draggedPiece)) {
+                draggedPiece.forEach((row, ri) => row.forEach((val, ci) => {
+                    if (val) {
+                        const target = document.querySelector(`#face-${fId} .cell[data-r="${r+ri}"][data-c="${c+ci}"]`);
+                        if (target) target.classList.add('preview');
+                    }
+                }));
+            }
+        }
+
+        function clearPreview() { document.querySelectorAll('.cell.preview').forEach(el => el.classList.remove('preview')); }
+
+        function canPlace(fId, r, c, shape) {
+            return shape.every((row, ri) => row.every((val, ci) => {
+                if (!val) return true;
+                const nr = r + ri, nc = c + ci;
+                return nr < SIZE && nc < SIZE && boards[fId][nr][nc] === 0;
+            }));
+        }
+
+        function handleDrop(fId, r, c) {
+            if (canPlace(fId, r, c, draggedPiece)) {
+                draggedPiece.forEach((row, ri) => row.forEach((val, ci) => {
+                    if (val) boards[fId][r + ri][c + ci] = 1;
+                }));
+                checkClear(fId);
+                renderFace(fId);
+                
+                const shelf = document.getElementById('piece-shelf');
+                shelf.children[draggedIndex].style.visibility = 'hidden';
+                currentPieces[draggedIndex] = null;
+
+                if (currentPieces.every(p => p === null)) {
+                    generatePieces();
+                } else {
+                    checkGameOver();
+                }
+            }
+            draggedPiece = null;
+        }
+
+        function checkClear(fId) {
+            let b = boards[fId], rClear = [], cClear = [];
+            for (let i = 0; i < SIZE; i++) {
+                if (b[i].every(v => v !== 0)) rClear.push(i);
+                let colFull = true;
+                for (let r = 0; r < SIZE; r++) if (b[r][i] === 0) colFull = false;
+                if (colFull) cClear.push(i);
+            }
+            if (rClear.length > 0 || cClear.length > 0) {
+                score += (rClear.length + cClear.length) * 100;
+                document.getElementById('score').innerText = score;
+                rClear.forEach(r => b[r].fill(0));
+                cClear.forEach(c => b.forEach(row => row[c] = 0));
+            }
+        }
+
+        // --- 死局判定邏輯 ---
+        function checkGameOver() {
+            // 遍歷當前手中所有剩餘方塊
+            const canMove = currentPieces.some(shape => {
+                if (!shape) return false;
+                // 遍歷所有 6 個面
+                return faces.some(fId => {
+                    // 遍歷面上的所有格子
+                    for (let r = 0; r < SIZE; r++) {
+                        for (let c = 0; c < SIZE; c++) {
+                            if (canPlace(fId, r, c, shape)) return true;
+                        }
+                    }
+                    return false;
+                });
+            });
+
+            if (!canMove) {
+                document.getElementById('final-score').innerText = `最終同步能量: ${score}`;
+                document.getElementById('game-over').style.display = 'flex';
+            }
+        }
+
+        function resetGame() { init(); }
+        init();
+    </script>
+</body>
+</html>
